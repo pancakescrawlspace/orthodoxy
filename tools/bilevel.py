@@ -6,7 +6,11 @@ rendered and compared with the input; pages that differ noticeably are listed.
 
 Requires: pikepdf, pymupdf, pillow, numpy, and jbig2enc's `jbig2` on PATH.
 
-usage: bilevel.py IN OUT [--max-ppi 300] [--threshold 330]
+--keep-jbig2 leaves images that are already JBIG2 (and need no downsampling) alone;
+use it when they come from a symbol-coding encoder (e.g. archive.org/LuraDocument),
+whose output is much smaller than the lossless generic re-encode.
+
+usage: bilevel.py IN OUT [--max-ppi 300] [--threshold 330] [--keep-jbig2]
 """
 import argparse
 import os
@@ -25,6 +29,11 @@ def encode_jbig2(img):
         path = os.path.join(d, "i.png")
         img.save(path)
         return subprocess.run(["jbig2", "-p", path], check=True, capture_output=True).stdout
+
+
+def filters(o):
+    f = o.get("/Filter")
+    return list(f) if isinstance(f, pikepdf.Array) else [f]
 
 
 def decode(doc, xref):
@@ -70,12 +79,15 @@ def main():
     ap.add_argument("dst")
     ap.add_argument("--max-ppi", type=float, default=300)
     ap.add_argument("--threshold", type=float, default=330, help="only downsample above this ppi")
+    ap.add_argument("--keep-jbig2", action="store_true", help="skip images that are already JBIG2")
     a = ap.parse_args()
 
     pdf = pikepdf.open(a.src)
     doc = fitz.open(a.src)
     n = down = 0
     for o, ppi in list(bilevel_images(pdf)):
+        if a.keep_jbig2 and ppi <= a.threshold and Name.JBIG2Decode in filters(o):
+            continue
         im = decode(doc, o.objgen[0])
         if o.get("/ImageMask", False):
             im = im.point(lambda v: 255 - v)  # MuPDF gives stencils as coverage (255 = paint)

@@ -7,15 +7,29 @@ run `ocrmypdf -O3` afterwards to recompress them as JBIG2.
 
 Requires: pikepdf, pillow, numpy. Follow with `ocrmypdf -O3 --skip-text` for JBIG2 (+ OCR).
 
+--pages limits processing to the given pages (e.g. "4-10,14,57"); --gray-pages stores
+the given pages (photos) as level-stretched greyscale JPEG instead of 1-bit
+(darkest 1% -> black, lightest 10%, i.e. the paper, -> white).
+
 usage: binarize.py IN OUT [--color-frac 0.02] [--k 0.2] [--window 0]
-                   [--upscale N] [--gray Q] [--dry-run]
+                   [--upscale N] [--gray Q] [--pages SPEC] [--gray-pages SPEC] [--dry-run]
 """
 import argparse
 import zlib
 
 import numpy as np
 import pikepdf
+from PIL import ImageOps
 from pikepdf import Name, PdfImage
+
+
+def page_set(spec):
+    """'4-10,14' -> {4, 5, ..., 10, 14}"""
+    out = set()
+    for part in filter(None, spec.split(",")):
+        lo, _, hi = part.partition("-")
+        out.update(range(int(lo), int(hi or lo) + 1))
+    return out
 
 
 def chroma_fraction(rgb):
@@ -54,12 +68,17 @@ def main():
     ap.add_argument("--upscale", type=int, default=1, help="upscale factor before binarizing (low-res scans)")
     ap.add_argument("--gray", type=int, default=0, metavar="Q",
                     help="write greyscale JPEG at quality Q instead of 1-bit")
+    ap.add_argument("--pages", default="", help="only process these pages, e.g. 4-10,14")
+    ap.add_argument("--gray-pages", default="", help="pages to store as level-stretched greyscale JPEG")
     a = ap.parse_args()
+    only, gray_pages = page_set(a.pages), page_set(a.gray_pages)
 
     pdf = pikepdf.open(a.src)
     seen = set()
     kept, converted = [], 0
     for pno, page in enumerate(pdf.pages, 1):
+        if only and pno not in only:
+            continue
         for obj in page.images.values():
             if obj.objgen in seen:
                 continue
@@ -77,10 +96,13 @@ def main():
             converted += 1
             if a.dry_run:
                 continue
-            if a.gray:
+            if a.gray or pno in gray_pages:
                 import io
                 buf = io.BytesIO()
-                rgb.convert("L").save(buf, "JPEG", quality=a.gray, optimize=True)
+                g = rgb.convert("L")
+                if pno in gray_pages:
+                    g = ImageOps.autocontrast(g, cutoff=(1, 10))  # paper (>10% of page) -> white
+                g.save(buf, "JPEG", quality=a.gray or 75, optimize=True)
                 obj.write(buf.getvalue(), filter=Name.DCTDecode)
                 obj.ColorSpace = Name.DeviceGray
                 obj.BitsPerComponent = 8
